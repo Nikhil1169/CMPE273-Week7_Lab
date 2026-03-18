@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  labels:
+    app: registry
+spec:
+  type: ClusterIP
+  selector:
+    app: registry
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  labels:
+    app: registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registry
+  template:
+    metadata:
+      labels:
+        app: registry
+    spec:
+      containers:
+        - name: registry
+          image: discovery-demo:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: APP
+              value: service_registry:app
+            - name: PORT
+              value: "8000"
+            - name: REGISTRY_CLEANUP_INTERVAL_SECONDS
+              value: "5"
+            - name: REGISTRY_DEFAULT_TTL_SECONDS
+              value: "15"
+          ports:
+            - containerPort: 8000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: client-service
+  labels:
+    app: client-service
+spec:
+  type: ClusterIP
+  selector:
+    app: client-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-service
+  labels:
+    app: client-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: client-service
+  template:
+    metadata:
+      labels:
+        app: client-service
+        version: v1
+    spec:
+      containers:
+        - name: client-service
+          image: discovery-demo:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: APP
+              value: client_service:app
+            - name: PORT
+              value: "8000"
+            - name: SERVICE_PORT
+              value: "8000"
+            - name: SERVICE_NAME
+              value: demo-service
+            - name: TARGET_SERVICE_NAME
+              value: demo-service
+            - name: REGISTRY_URL
+              value: http://registry:8000
+            - name: HEARTBEAT_INTERVAL_SECONDS
+              value: "5"
+            - name: INSTANCE_TTL_SECONDS
+              value: "15"
+            # Compute base_url as http://<podIP>:8000 so other pods can reach it directly.
+            - name: SERVICE_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          ports:
+            - containerPort: 8000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+

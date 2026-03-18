@@ -1,0 +1,28 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: client-service-dr
+spec:
+  host: client-service
+  trafficPolicy:
+    loadBalancer:
+      simple: RANDOM
+  subsets:
+    - name: v1
+      labels:
+        version: v1
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: client-service-vs
+spec:
+  hosts:
+    - client-service
+  http:
+    - route:
+        - destination:
+            host: client-service
+            subset: v1
+          weight: 100
+
