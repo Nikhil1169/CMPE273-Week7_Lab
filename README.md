@@ -18,6 +18,10 @@ The project also includes a clean **Dockerfile**, **Kubernetes manifests**, and 
 - Architecture diagram: see [ARCHITECTURE.md](./ARCHITECTURE.md)
 - Optional Bonus: Service Mesh Discovery (Istio manifests in `k8s/`)
 
+### Dashboard Preview
+
+![Service Registry Dashboard UI](./dashboard.png)
+
 ## Local Quick Start (How to Run)
 
 ### 1) Set up the virtual environment

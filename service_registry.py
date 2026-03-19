@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
 from fastapi import FastAPI, HTTPException, Path, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, HttpUrl
 
 
@@ -245,6 +246,212 @@ app = FastAPI(
 @app.get("/healthz")
 async def healthz() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard() -> HTMLResponse:
+    """
+    Lightweight HTML dashboard for demos/video recordings.
+
+    The assignment asks to keep existing JSON routes intact; this endpoint
+    reads the same registry state by calling the existing `/v1/services`
+    endpoint on the client-side every 3 seconds.
+    """
+
+    # HTML is intentionally self-contained (Tailwind via CDN + small JS poller).
+    html = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Service Registry Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-slate-950 text-slate-100">
+    <div class="max-w-6xl mx-auto p-6">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 class="text-2xl font-semibold tracking-tight">Service Registry</h1>
+          <p class="text-slate-300 text-sm mt-1">Live view (auto-refresh every 3 seconds)</p>
+        </div>
+        <div class="text-sm text-slate-300">
+          <div>Last update: <span id="lastUpdate">-</span></div>
+          <div>Registry status: <span id="statusBadge" class="font-medium">loading...</span></div>
+        </div>
+      </div>
+
+      <div class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <div class="text-slate-300 text-sm">Total services</div>
+          <div id="totalServices" class="text-3xl font-bold mt-1">0</div>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <div class="text-slate-300 text-sm">Total active instances</div>
+          <div id="totalInstances" class="text-3xl font-bold mt-1">0</div>
+        </div>
+      </div>
+
+      <div class="mt-6">
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-semibold">Registered Instances</h2>
+          <button id="refreshBtn" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 text-sm border border-slate-700">
+            Refresh now
+          </button>
+        </div>
+
+        <div id="errorBanner" class="hidden mt-4 rounded-xl border border-red-900 bg-red-950/30 p-3 text-red-200 text-sm"></div>
+
+        <div class="mt-4 grid grid-cols-1 xl:grid-cols-2 gap-4" id="cards"></div>
+      </div>
+
+      <div class="mt-8 text-slate-400 text-xs">
+        Data is sourced from <code>/v1/services</code>. Heartbeat freshness is represented as time since last heartbeat.
+      </div>
+    </div>
+
+    <script>
+      const endpoint = "/v1/services";
+
+      function escapeHtml(str) {
+        return String(str)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function fmtAge(seconds) {
+        if (!isFinite(seconds)) return "-";
+        seconds = Math.max(0, Math.floor(seconds));
+        if (seconds < 60) return `${seconds}s`;
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        if (m < 60) return `${m}m ${s}s`;
+        const h = Math.floor(m / 60);
+        const mm = m % 60;
+        return `${h}h ${mm}m`;
+      }
+
+      function render(data) {
+        // Shape from `/v1/services`:
+        // { services: { [serviceName]: { count: <int>, instances: [ { ... } ] } } }
+        const services = data.services || {};
+        const serviceNames = Object.keys(services).sort();
+
+        let totalServices = serviceNames.length;
+        let totalInstances = 0;
+        for (const name of serviceNames) totalInstances += services[name].count || 0;
+
+        document.getElementById("totalServices").textContent = totalServices;
+        document.getElementById("totalInstances").textContent = totalInstances;
+
+        const nowEpochSeconds = Date.now() / 1000;
+        const cardsEl = document.getElementById("cards");
+        cardsEl.innerHTML = "";
+
+        if (serviceNames.length === 0) {
+          cardsEl.innerHTML = `
+            <div class="xl:col-span-2 rounded-xl border border-slate-800 bg-slate-900 p-6">
+              <div class="text-slate-300">No services registered yet.</div>
+              <div class="text-slate-500 text-sm mt-1">Start a client instance and it will self-register.</div>
+            </div>
+          `;
+          return;
+        }
+
+        for (const serviceName of serviceNames) {
+          const bucket = services[serviceName] || { count: 0, instances: [] };
+          const instances = bucket.instances || [];
+          const card = document.createElement("div");
+          card.className = "rounded-xl border border-slate-800 bg-slate-900 p-4";
+
+          const header = document.createElement("div");
+          header.className = "flex items-start justify-between gap-3";
+          header.innerHTML = `
+            <div>
+              <div class="text-slate-200 font-semibold">${escapeHtml(serviceName)}</div>
+              <div class="text-slate-400 text-sm mt-1">${instances.length} instance(s)</div>
+            </div>
+            <div class="text-xs rounded-lg px-2 py-1 border border-slate-700 bg-slate-950/30 text-slate-300">
+              total=${escapeHtml(String(bucket.count || 0))}
+            </div>
+          `;
+          card.appendChild(header);
+
+          const table = document.createElement("div");
+          table.className = "mt-4 overflow-x-auto";
+
+          // Build table rows (one per instance)
+          const rows = instances.map((inst) => {
+            const baseUrl = inst.base_url ?? "-";
+            const instanceId = inst.instance_id ?? "-";
+            const lastHb = inst.last_heartbeat_at_epoch_s;
+            const age = nowEpochSeconds - lastHb;
+            const registeredAt = inst.registered_at_epoch_s ?? null;
+            return `
+              <tr class="border-t border-slate-800">
+                <td class="py-2 px-3 text-xs text-slate-400 whitespace-nowrap">instance_id</td>
+                <td class="py-2 px-3 text-xs font-medium text-slate-100">${escapeHtml(instanceId)}</td>
+              </tr>
+              <tr class="border-t border-slate-800">
+                <td class="py-2 px-3 text-xs text-slate-400 whitespace-nowrap">base_url</td>
+                <td class="py-2 px-3 text-xs font-medium text-slate-100">${escapeHtml(baseUrl)}</td>
+              </tr>
+              <tr class="border-t border-slate-800">
+                <td class="py-2 px-3 text-xs text-slate-400 whitespace-nowrap">last heartbeat</td>
+                <td class="py-2 px-3 text-xs font-medium text-slate-100">${fmtAge(age)} ago</td>
+              </tr>
+            `;
+          }).join("");
+
+          table.innerHTML = `
+            <table class="min-w-full border-separate border-spacing-0 text-sm">
+              <tbody>
+                ${rows}
+              </tbody>
+            </table>
+          `;
+          card.appendChild(table);
+
+          cardsEl.appendChild(card);
+        }
+      }
+
+      async function refresh() {
+        const now = new Date();
+        document.getElementById("lastUpdate").textContent = now.toLocaleTimeString();
+        const banner = document.getElementById("errorBanner");
+        banner.classList.add("hidden");
+        banner.textContent = "";
+        document.getElementById("statusBadge").textContent = "loading...";
+
+        try {
+          const resp = await fetch(endpoint, { cache: "no-store" });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const data = await resp.json();
+          document.getElementById("statusBadge").textContent = "ok";
+          document.getElementById("statusBadge").className = "font-medium text-emerald-300";
+          render(data);
+        } catch (err) {
+          document.getElementById("statusBadge").textContent = "error";
+          document.getElementById("statusBadge").className = "font-medium text-rose-300";
+          banner.textContent = `Failed to fetch ${endpoint}: ${err.message || err}`;
+          banner.classList.remove("hidden");
+        }
+      }
+
+      // Manual refresh
+      document.getElementById("refreshBtn").addEventListener("click", () => refresh());
+
+      // Auto refresh
+      refresh();
+      setInterval(refresh, 3000);
+    </script>
+  </body>
+</html>"""
+
+    return HTMLResponse(content=html)
 
 
 @app.post("/v1/register", response_model=InstanceView, status_code=status.HTTP_201_CREATED)
